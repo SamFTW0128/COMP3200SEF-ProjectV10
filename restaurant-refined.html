@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FoodTrack - Restaurant Portal</title>
+    <style>
+        /* (CSS omitted for brevity; keep existing styles) */
+        /* ... */
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <div class="logo-icon">🏪</div>
+                <span id="restaurantName">Restaurant</span>
+            </div>
+            <button class="btn-logout" onclick="logout()">Logout</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="dashboard-header">
+            <h1>Restaurant Dashboard 🍽️</h1>
+            <p style="color: var(--color-text-secondary);">Manage your menu and orders</p>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon">📦</div>
+                <div class="stat-value" id="totalOrders">0</div>
+                <div class="stat-label">Total Orders</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">💰</div>
+                <div class="stat-value" id="totalRevenue">$0</div>
+                <div class="stat-label">Total Revenue</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">⭐</div>
+                <div class="stat-value" id="avgRating">4.5</div>
+                <div class="stat-label">Average Rating</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">🔥</div>
+                <div class="stat-value" id="activeOrders">0</div>
+                <div class="stat-label">Active Orders</div>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('orders')">📋 Orders</button>
+            <button class="tab" onclick="switchTab('menu')">🍔 Menu Management</button>
+        </div>
+
+        <div id="ordersTab" class="tab-content active">
+            <h2 class="section-title">Incoming Orders</h2>
+            <div class="order-grid" id="orderGrid"></div>
+        </div>
+
+        <div id="menuTab" class="tab-content">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+                <h2 class="section-title">Your Menu</h2>
+                <button class="btn btn-primary" onclick="openAddDishModal()">+ Add Dish</button>
+            </div>
+            <div class="menu-grid" id="menuGrid"></div>
+        </div>
+    </div>
+
+    <!-- Add/Edit Dish Modal -->
+    <div class="modal" id="dishModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 id="modalTitle">Add New Dish</h2>
+            </div>
+            <form id="dishForm">
+                <div class="form-group">
+                    <label class="form-label">Dish Name *</label>
+                    <input type="text" class="form-input" id="dishName" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Description</label>
+                    <textarea class="form-textarea" id="dishDesc"></textarea>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Price ($) *</label>
+                    <input type="number" step="0.01" class="form-input" id="dishPrice" required>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Category</label>
+                    <select class="form-select" id="dishCategory">
+                        <option value="Main Course">Main Course</option>
+                        <option value="Appetizers">Appetizers</option>
+                        <option value="Desserts">Desserts</option>
+                        <option value="Beverages">Beverages</option>
+                        <option value="Sides">Sides</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Image URL</label>
+                    <input type="text" class="form-input" id="dishImage" placeholder="https://...">
+                </div>
+                <div style="display: flex; gap: 0.5rem; justify-content: flex-end;">
+                    <button type="button" class="btn btn-danger" onclick="closeDishModal()">Cancel</button>
+                    <button type="submit" class="btn btn-success">Save Dish</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="utils.js"></script>
+    <script>
+        const API_BASE = ''; // e.g. 'https://your-backend-domain.com'
+        let currentUser = null;
+        let currentEditDish = null;
+        let dishes = [];
+
+        // Helper to include auth token in headers
+        function getAuthHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + sessionStorage.getItem('authToken')
+            };
+        }
+
+        // Verify JWT and get current user
+        async function ensureAuthenticated(requiredRole) {
+            const token = sessionStorage.getItem('authToken');
+            if (!token) {
+                window.location.href = 'index.html';
+                return false;
+            }
+            try {
+                const resp = await fetch(`${API_BASE}/api/me`, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!resp.ok) {
+                    sessionStorage.removeItem('authToken');
+                    window.location.href = 'index.html';
+                    return false;
+                }
+                const data = await resp.json();
+                currentUser = { id: data.user.id, name: data.user.name, role: data.user.role };
+                if (requiredRole && currentUser.role !== requiredRole) {
+                    window.location.href = 'index.html';
+                    return false;
+                }
+                document.getElementById('restaurantName').textContent = currentUser.name;
+                return true;
+            } catch (err) {
+                console.error(err);
+                sessionStorage.removeItem('authToken');
+                window.location.href = 'index.html';
+                return false;
+            }
+        }
+
+        // Switch visible tab
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById(tabName + 'Tab').classList.add('active');
+        }
+
+        // Load stats (total orders, revenue, active orders)
+        async function loadStats() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/orders`, {
+                    headers: getAuthHeaders()
+                });
+                const orders = await resp.json();
+                const myOrders = orders.filter(o => o.restaurant_id === currentUser.id);
+                document.getElementById('totalOrders').textContent = myOrders.length;
+                const activeOrders = myOrders.filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled');
+                document.getElementById('activeOrders').textContent = activeOrders.length;
+                const revenue = myOrders.filter(o => o.status === 'Delivered')
+                                        .reduce((sum, o) => sum + o.total_price, 0);
+                document.getElementById('totalRevenue').textContent = `$${revenue.toFixed(2)}`;
+            } catch (err) {
+                console.error('Failed to load stats', err);
+            }
+        }
+
+        // Render incoming orders
+        async function renderOrders() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/orders`, {
+                    headers: getAuthHeaders()
+                });
+                let orders = await resp.json();
+                orders = orders
+                    .filter(o => o.restaurant_id === currentUser.id)
+                    .filter(o => o.status !== 'Delivered' && o.status !== 'Cancelled')
+                    .sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+
+                const grid = document.getElementById('orderGrid');
+                if (orders.length === 0) {
+                    grid.innerHTML = `<p style="text-align:center; padding:2rem; color:var(--color-text-secondary);">No active orders 📦</p>`;
+                    return;
+                }
+                grid.innerHTML = orders.map(order => {
+                    const itemsHTML = order.items.map(item => `
+                        <div class="order-item">
+                            <span>${item.quantity}× ${escapeHtml(item.dish_name)}</span>
+                            <span>$${(item.price * item.quantity).toFixed(2)}</span>
+                        </div>`).join('');
+                    return `
+                        <div class="order-card">
+                            <div class="order-card-header">
+                                <span class="order-id">${escapeHtml(order.id.toString())}</span>
+                                <span class="status-badge status-${order.status.toLowerCase()}">${escapeHtml(order.status)}</span>
+                            </div>
+                            <div style="margin-bottom:0.75rem;">
+                                <strong>Customer:</strong> ${escapeHtml(order.customer_name)}<br>
+                                <strong>Order Time:</strong> ${new Date(order.created_at).toLocaleString()}
+                            </div>
+                            <div class="order-items">
+                                ${itemsHTML}
+                                <div style="border-top:1px solid var(--color-border); margin-top:0.5rem; padding-top:0.5rem;">
+                                    <strong>Total: $${order.total_price.toFixed(2)}</strong>
+                                </div>
+                            </div>
+                            <div class="order-actions">
+                                ${order.status === 'pending' ? `
+                                    <button class="btn btn-success" onclick="acceptOrder('${order.id}')">✓ Accept</button>
+                                    <button class="btn btn-danger" onclick="rejectOrder('${order.id}')">✗ Reject</button>
+                                ` : ''}
+                                ${order.status === 'preparing' ? `
+                                    <button class="btn btn-primary" onclick="markReady('${order.id}')">✓ Mark as Ready</button>
+                                ` : ''}
+                            </div>
+                        </div>`;
+                }).join('');
+            } catch (err) {
+                console.error('Failed to render orders', err);
+            }
+        }
+
+        // Order actions
+        async function acceptOrder(orderId) {
+            await fetch(`${API_BASE}/api/orders/${orderId}`, {
+                method: 'PATCH',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ status: 'preparing' })
+            });
+            toast('✅ Order accepted!');
+            renderOrders();
+            loadStats();
+        }
+        async function rejectOrder(orderId) {
+            if (!confirm('Are you sure you want to reject this order?')) return;
+            await fetch(`${API_BASE}/api/orders/${orderId}`, {
+                method: 'PATCH',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ status: 'cancelled' })
+            });
+            toast('⚠️ Order rejected');
+            renderOrders();
+            loadStats();
+        }
+        async function markReady(orderId) {
+            await fetch(`${API_BASE}/api/orders/${orderId}`, {
+                method: 'PATCH',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ status: 'ready' })
+            });
+            toast('✅ Order marked as Ready');
+            renderOrders();
+            loadStats();
+        }
+
+        // Render restaurant's menu (dishes)
+        async function renderMenu() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/dishes?restaurant_id=${currentUser.id}`, {
+                    headers: getAuthHeaders()
+                });
+                dishes = await resp.json();
+                const grid = document.getElementById('menuGrid');
+                if (!dishes.length) {
+                    grid.innerHTML = `<p style="text-align:center; padding:2rem; color:var(--color-text-secondary);">No menu items yet. Add your first dish! 🍽️</p>`;
+                    return;
+                }
+                grid.innerHTML = dishes.map(dish => `
+                    <div class="menu-item-card">
+                        <img src="${dish.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=300&h=200&fit=crop'}" 
+                             alt="${escapeHtml(dish.name)}" class="menu-item-image" loading="lazy">
+                        <div class="menu-item-info">
+                            <div class="menu-item-name">${escapeHtml(dish.name)}</div>
+                            <div class="menu-item-desc">${escapeHtml(dish.description || '')}</div>
+                            <div style="font-size:0.875rem; color:var(--color-text-secondary); margin-bottom:0.5rem;">
+                                ${escapeHtml(dish.category || 'Main Course')}
+                            </div>
+                            <div class="menu-item-price">$${(dish.price||0).toFixed(2)}</div>
+                            <div class="menu-item-actions">
+                                <button class="btn btn-primary" onclick="editDish('${dish.id}')">Edit</button>
+                                <button class="btn btn-danger" onclick="deleteDish('${dish.id}')">Delete</button>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error('Failed to load menu', err);
+            }
+        }
+
+        // Open modals for adding/editing dishes
+        function openAddDishModal() {
+            currentEditDish = null;
+            document.getElementById('modalTitle').textContent = 'Add New Dish';
+            document.getElementById('dishForm').reset();
+            document.getElementById('dishModal').classList.add('active');
+        }
+        function editDish(dishId) {
+            currentEditDish = dishes.find(d => d.id == dishId);
+            if (!currentEditDish) return;
+            document.getElementById('modalTitle').textContent = 'Edit Dish';
+            document.getElementById('dishName').value = currentEditDish.name;
+            document.getElementById('dishDesc').value = currentEditDish.description || '';
+            document.getElementById('dishPrice').value = currentEditDish.price;
+            document.getElementById('dishCategory').value = currentEditDish.category;
+            document.getElementById('dishImage').value = currentEditDish.image_url || '';
+            document.getElementById('dishModal').classList.add('active');
+        }
+        function closeDishModal() {
+            document.getElementById('dishModal').classList.remove('active');
+            currentEditDish = null;
+        }
+
+        // Handle dish form submit (add or update)
+        document.getElementById('dishForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const name = document.getElementById('dishName').value;
+            const description = document.getElementById('dishDesc').value;
+            const price = parseFloat(document.getElementById('dishPrice').value) || 0;
+            const category = document.getElementById('dishCategory').value;
+            const imageUrl = document.getElementById('dishImage').value;
+            if (currentEditDish) {
+                await fetch(`${API_BASE}/api/dishes/${currentEditDish.id}`, {
+                    method: 'PATCH',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ name, description, price, category, image_url: imageUrl })
+                });
+                toast('✅ Dish updated!');
+            } else {
+                await fetch(`${API_BASE}/api/dishes`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify({ 
+                        restaurant_id: currentUser.id, name, description, price, category, image_url: imageUrl 
+                    })
+                });
+                toast('✅ Dish added!');
+            }
+            closeDishModal();
+            renderMenu();
+        });
+
+        async function deleteDish(dishId) {
+            if (!confirm('Are you sure you want to delete this dish?')) return;
+            await fetch(`${API_BASE}/api/dishes/${dishId}`, {
+                method: 'DELETE',
+                headers: getAuthHeaders()
+            });
+            toast('✅ Dish deleted');
+            renderMenu();
+        }
+
+        // Logout clears session token
+        function logout() {
+            sessionStorage.removeItem('authToken');
+            window.location.href = 'index.html';
+        }
+
+        // On page load, authenticate and initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (!await ensureAuthenticated('restaurant')) return;
+            loadStats();
+            renderOrders();
+            renderMenu();
+            // Periodically refresh orders and stats
+            setInterval(() => {
+                loadStats();
+                renderOrders();
+            }, 10000);
+        });
+    </script>
+</body>
+</html>

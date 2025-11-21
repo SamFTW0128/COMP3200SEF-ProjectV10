@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FoodTrack - Admin Portal</title>
+    <style>
+        /* (CSS omitted for brevity) */
+        /* ... */
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <div class="logo-icon">🛠️</div>
+                <span>Admin Dashboard</span>
+            </div>
+            <button class="btn-logout" onclick="logout()">Logout</button>
+        </div>
+    </header>
+    <div class="container">
+        <div class="dashboard-header">
+            <h1>System Overview</h1>
+            <p style="color: var(--color-text-secondary);">User, order, and revenue statistics</p>
+        </div>
+        <div class="kpi-grid">
+            <div class="kpi-card success">
+                <div class="kpi-icon">👥</div>
+                <div class="kpi-value" id="totalUsers">0</div>
+                <div class="kpi-label">Total Users</div>
+            </div>
+            <div class="kpi-card warning">
+                <div class="kpi-icon">🛒</div>
+                <div class="kpi-value" id="activeOrders">0</div>
+                <div class="kpi-label">Active Orders</div>
+            </div>
+            <div class="kpi-card success">
+                <div class="kpi-icon">💰</div>
+                <div class="kpi-value" id="totalRevenue">$0</div>
+                <div class="kpi-label">Total Revenue</div>
+            </div>
+        </div>
+
+        <div class="tabs">
+            <button class="tab active" onclick="switchTab('orders')">📦 Orders</button>
+            <button class="tab" onclick="switchTab('users')">👤 Users</button>
+            <button class="tab" onclick="switchTab('restaurants')">🏪 Restaurants</button>
+        </div>
+
+        <div id="ordersTab" class="tab-content active">
+            <table id="ordersTable">
+                <thead>
+                    <tr><th>ID</th><th>Customer</th><th>Restaurant</th><th>Rider</th><th>Status</th><th>Total</th><th>Created</th><th>Action</th></tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </div>
+
+        <div id="usersTab" class="tab-content">
+            <h3>Customers</h3>
+            <table id="customersTable"><tbody></tbody></table>
+            <h3>Restaurants</h3>
+            <table id="restaurantsTable"><tbody></tbody></table>
+            <h3>Riders</h3>
+            <table id="ridersTable"><tbody></tbody></table>
+        </div>
+
+        <div id="restaurantsTab" class="tab-content">
+            <div id="restaurantsGrid" style="display:grid; grid-template-columns: repeat(auto-fill, minmax(300px,1fr)); gap:1rem;"></div>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="utils.js"></script>
+    <script>
+        const API_BASE = '';
+        let currentUser = null;
+
+        function getAuthHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + sessionStorage.getItem('authToken')
+            };
+        }
+
+        async function ensureAuthenticated(requiredRole) {
+            const token = sessionStorage.getItem('authToken');
+            if (!token) { window.location.href = 'index.html'; return false; }
+            try {
+                const resp = await fetch(`${API_BASE}/api/me`, { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!resp.ok) { sessionStorage.removeItem('authToken'); window.location.href='index.html'; return false; }
+                const data = await resp.json();
+                currentUser = { id: data.user.id, name: data.user.name, role: data.user.role };
+                if (requiredRole && currentUser.role !== requiredRole) {
+                    window.location.href = 'index.html'; return false;
+                }
+                return true;
+            } catch (err) {
+                console.error(err);
+                sessionStorage.removeItem('authToken');
+                window.location.href = 'index.html';
+                return false;
+            }
+        }
+
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            event.target.classList.add('active');
+            document.getElementById(tabName + 'Tab').classList.add('active');
+        }
+
+        async function loadKPIs() {
+            try {
+                // Fetch orders and users from backend
+                const [ordersResp, usersResp] = await Promise.all([
+                    fetch(`${API_BASE}/api/orders`, { headers: getAuthHeaders() }),
+                    fetch(`${API_BASE}/api/users`,   { headers: getAuthHeaders() })
+                ]);
+                const orders = await ordersResp.json();
+                const users = await usersResp.json();
+                const totalUsers = users.length;
+                const activeOrders = orders.filter(o => o.status !== 'delivered' && o.status !== 'cancelled').length;
+                const revenue = orders.filter(o => o.status === 'delivered').reduce((sum,o) => sum + o.total_price, 0);
+                document.getElementById('totalUsers').textContent = totalUsers;
+                document.getElementById('activeOrders').textContent = activeOrders;
+                document.getElementById('totalRevenue').textContent = `$${revenue.toFixed(2)}`;
+            } catch (err) {
+                console.error('Failed to load KPIs', err);
+            }
+        }
+
+        async function loadOrders() {
+            const resp = await fetch(`${API_BASE}/api/orders`, { headers: getAuthHeaders() });
+            const orders = await resp.json();
+            const tbody = document.querySelector('#ordersTable tbody');
+            if (!orders.length) {
+                tbody.innerHTML = `<tr><td colspan="8" style="text-align:center; padding:2rem; color:var(--color-text-secondary);">No orders yet</td></tr>`;
+                return;
+            }
+            tbody.innerHTML = orders.map(o => `
+                <tr>
+                    <td>${escapeHtml(o.id.toString())}</td>
+                    <td>${escapeHtml(o.customer_name || 'N/A')}</td>
+                    <td>${escapeHtml(o.restaurant_name || 'N/A')}</td>
+                    <td>${escapeHtml(o.rider_name || 'N/A')}</td>
+                    <td><span class="status-badge status-${o.status.toLowerCase()}">${escapeHtml(o.status)}</span></td>
+                    <td>$${o.total_price.toFixed(2)}</td>
+                    <td>${new Date(o.created_at).toLocaleString()}</td>
+                    <td><button class="btn btn-danger" onclick="deleteOrder('${o.id}')">Cancel</button></td>
+                </tr>
+            `).join('');
+        }
+
+        async function deleteOrder(orderId) {
+            if (!confirm('Are you sure you want to cancel this order?')) return;
+            await fetch(`${API_BASE}/api/orders/${orderId}`, {
+                method: 'PATCH',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ status: 'cancelled' })
+            });
+            toast('✅ Order cancelled');
+            loadOrders();
+            loadKPIs();
+        }
+
+        async function loadUsers() {
+            const resp = await fetch(`${API_BASE}/api/users`, { headers: getAuthHeaders() });
+            const users = await resp.json();
+            const ordersResp = await fetch(`${API_BASE}/api/orders`, { headers: getAuthHeaders() });
+            const orders = await ordersResp.json();
+
+            // Populate tables
+            const customers = users.filter(u => u.role === 'customer');
+            const restaurants = users.filter(u => u.role === 'restaurant');
+            const riders = users.filter(u => u.role === 'rider');
+
+            const custTbody = document.querySelector('#customersTable tbody');
+            const restTbody = document.querySelector('#restaurantsTable tbody');
+            const riderTbody = document.querySelector('#ridersTable tbody');
+
+            custTbody.innerHTML = customers.map(c => {
+                const orderCount = orders.filter(o => o.customer_id === c.id).length;
+                return `<tr>
+                    <td>${escapeHtml(c.user_id)}</td>
+                    <td>${escapeHtml(c.name)}</td>
+                    <td>${new Date(c.created_at).toLocaleDateString()}</td>
+                    <td>${orderCount}</td>
+                    <td><button class="btn btn-danger" onclick="deleteUser('customer','${c.id}')">Delete</button></td>
+                </tr>`;
+            }).join('') || '<tr><td colspan="5" style="text-align:center; padding:2rem; color:var(--color-text-secondary);">No customers registered</td></tr>';
+
+            restTbody.innerHTML = restaurants.map(r => {
+                const orderCount = orders.filter(o => o.restaurant_id === r.id).length;
+                return `<tr>
+                    <td>${escapeHtml(r.user_id)}</td>
+                    <td>${escapeHtml(r.name)}</td>
+                    <td>${new Date(r.created_at).toLocaleDateString()}</td>
+                    <td>${orderCount}</td>
+                    <td><button class="btn btn-danger" onclick="deleteUser('restaurant','${r.id}')">Delete</button></td>
+                </tr>`;
+            }).join('') || '<tr><td colspan="5" style="text-align:center; padding:2rem; color:var(--color-text-secondary);">No restaurants registered</td></tr>';
+
+            riderTbody.innerHTML = riders.map(r => {
+                const deliveryCount = orders.filter(o => o.rider_id === r.id && o.status === 'delivered').length;
+                return `<tr>
+                    <td>${escapeHtml(r.user_id)}</td>
+                    <td>${escapeHtml(r.name)}</td>
+                    <td>${new Date(r.created_at).toLocaleDateString()}</td>
+                    <td>${deliveryCount}</td>
+                    <td><button class="btn btn-danger" onclick="deleteUser('rider','${r.id}')">Delete</button></td>
+                </tr>`;
+            }).join('') || '<tr><td colspan="5" style="text-align:center; padding:2rem; color:var(--color-text-secondary);">No riders registered</td></tr>';
+        }
+
+        async function deleteUser(role, userId) {
+            if (!confirm(`Delete this ${role}?`)) return;
+            await fetch(`${API_BASE}/api/users/${userId}`, {
+                method: 'DELETE',
+                headers: getAuthHeaders()
+            });
+            toast('✅ User deleted');
+            loadUsers();
+            loadKPIs();
+        }
+
+        async function loadRestaurants() {
+            const resp = await fetch(`${API_BASE}/api/users?role=restaurant`, { headers: getAuthHeaders() });
+            const restaurants = await resp.json();
+            const ordersResp = await fetch(`${API_BASE}/api/orders`, { headers: getAuthHeaders() });
+            const orders = await ordersResp.json();
+            const grid = document.getElementById('restaurantsGrid');
+            if (!restaurants.length) {
+                grid.innerHTML = `<div class="empty-state"><h3>No restaurants registered</h3></div>`;
+                return;
+            }
+            grid.innerHTML = restaurants.map(r => {
+                const orderCount = orders.filter(o => o.restaurant_id === r.id).length;
+                const revenue = orders.filter(o => o.restaurant_id === r.id && o.status === 'delivered')
+                                      .reduce((sum, o) => sum + o.total_price, 0);
+                return `
+                    <div style="background:white; border:2px solid #ffe4cc; padding:1.5rem; border-radius:var(--radius-md);">
+                        <h3>${escapeHtml(r.name)}</h3>
+                        <p>Orders: ${orderCount}</p>
+                        <p>Revenue: $${revenue.toFixed(2)}</p>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function logout() {
+            sessionStorage.removeItem('authToken');
+            window.location.href = 'index.html';
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (!await ensureAuthenticated('admin')) return;
+            loadKPIs();
+            loadOrders();
+            loadUsers();
+            loadRestaurants();
+        });
+    </script>
+</body>
+</html>

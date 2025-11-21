@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FoodTrack - Rider Portal</title>
+    <style>
+        /* (CSS omitted for brevity; existing styles retained) */
+        /* ... */
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <div class="logo-icon">🚴</div>
+                <span id="riderName">Rider</span>
+            </div>
+            <button class="btn-logout" onclick="logout()">Logout</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="status-banner">
+            <div>Your Status: </div>
+            <div class="status-toggle">
+                <button id="offlineBtn" onclick="setAvailability(false)">Offline</button>
+                <button id="availableBtn" class="active" onclick="setAvailability(true)">Available</button>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon">🚴</div>
+                <div class="stat-value" id="totalDeliveries">0</div>
+                <div class="stat-label">Deliveries Today</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon">💵</div>
+                <div class="stat-value" id="totalEarnings">$0</div>
+                <div class="stat-label">Earnings Today</div>
+            </div>
+        </div>
+
+        <h2 class="section-title">📦 Available Deliveries</h2>
+        <div class="delivery-grid" id="availableDeliveries"></div>
+
+        <h2 class="section-title">🔥 Active Delivery</h2>
+        <div id="activeDelivery"></div>
+
+        <h2 class="section-title">📋 Delivery History</h2>
+        <div class="delivery-grid" id="deliveryHistory"></div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="utils.js"></script>
+    <script>
+        const API_BASE = '';
+        let currentUser = null;
+        let isAvailable = false;
+
+        function getAuthHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + sessionStorage.getItem('authToken')
+            };
+        }
+
+        async function ensureAuthenticated(requiredRole) {
+            const token = sessionStorage.getItem('authToken');
+            if (!token) { window.location.href = 'index.html'; return false; }
+            try {
+                const resp = await fetch(`${API_BASE}/api/me`, { headers: { 'Authorization': 'Bearer ' + token } });
+                if (!resp.ok) { sessionStorage.removeItem('authToken'); window.location.href = 'index.html'; return false; }
+                const data = await resp.json();
+                currentUser = { id: data.user.id, name: data.user.name, role: data.user.role };
+                if (requiredRole && currentUser.role !== requiredRole) {
+                    window.location.href = 'index.html'; return false;
+                }
+                document.getElementById('riderName').textContent = currentUser.name;
+                return true;
+            } catch (err) {
+                console.error(err);
+                sessionStorage.removeItem('authToken');
+                window.location.href = 'index.html';
+                return false;
+            }
+        }
+
+        async function loadStats() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/orders`, { headers: getAuthHeaders() });
+                const orders = await resp.json();
+                const today = new Date().toDateString();
+                const todayOrders = orders
+                    .filter(o => o.rider_id === currentUser.id && o.status === 'delivered')
+                    .filter(o => new Date(o.updated_at).toDateString() === today);
+                document.getElementById('totalDeliveries').textContent = todayOrders.length;
+                const earnings = todayOrders.reduce((sum,o) => sum + (o.delivery_fee || 5), 0);
+                document.getElementById('totalEarnings').textContent = `$${earnings.toFixed(2)}`;
+            } catch (err) {
+                console.error('Stats load failed', err);
+            }
+        }
+
+        async function renderAvailableDeliveries() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/orders`, { headers: getAuthHeaders() });
+                let orders = await resp.json();
+                const available = orders.filter(o => o.status === 'ready' && !o.rider_id);
+                const container = document.getElementById('availableDeliveries');
+                if (!isAvailable) {
+                    container.innerHTML = `<div class="empty-state"><div class="empty-icon">🔴</div>
+                        <h3>You are offline</h3>
+                        <p>Set your status to "Available" to see delivery requests</p></div>`;
+                    return;
+                }
+                if (!available.length) {
+                    container.innerHTML = `<div class="empty-state"><div class="empty-icon">🌮</div>
+                        <h3>No deliveries available</h3>
+                        <p>New delivery requests will appear here</p></div>`;
+                    return;
+                }
+                container.innerHTML = available.map(order => `
+                    <div class="delivery-card">
+                        <div class="delivery-header">
+                            <span class="delivery-id">${escapeHtml(order.id.toString())}</span>
+                            <span class="delivery-fee">$${(order.delivery_fee||5).toFixed(2)} 💰</span>
+                        </div>
+                        <div class="delivery-info">
+                            <div class="delivery-location">
+                                <span class="location-icon">🏪</span>
+                                <div><strong>Pickup:</strong> ${escapeHtml(order.restaurant_name)}</div>
+                            </div>
+                            <div class="delivery-location">
+                                <span class="location-icon">📍</span>
+                                <div><strong>Deliver to:</strong> ${escapeHtml(order.delivery_address || 'Customer Address')}</div>
+                            </div>
+                            <div style="margin-top:0.75rem;">
+                                <strong>Order Total:</strong> $${order.total_price.toFixed(2)} • ${order.items.length} items
+                            </div>
+                        </div>
+                        <button class="btn btn-success" onclick="acceptDelivery('${order.id}')">Accept Delivery 🚴</button>
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error('Failed to load available deliveries', err);
+            }
+        }
+
+        async function acceptDelivery(orderId) {
+            await fetch(`${API_BASE}/api/orders/${orderId}`, {
+                method: 'PATCH',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ status: 'delivering', rider_id: currentUser.id })
+            });
+            toast('✅ Delivery accepted! Good luck!');
+            renderAvailableDeliveries();
+            renderActiveDelivery();
+            loadStats();
+        }
+
+        async function renderActiveDelivery() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/orders`, { headers: getAuthHeaders() });
+                let orders = await resp.json();
+                const delivering = orders.filter(o => o.rider_id === currentUser.id && o.status === 'delivering');
+                const container = document.getElementById('activeDelivery');
+                if (!delivering.length) {
+                    container.innerHTML = `<div class="empty-state"><div class="empty-icon">✨</div><p>No active deliveries</p></div>`;
+                    return;
+                }
+                container.innerHTML = delivering.map(order => `
+                    <div class="delivery-card" style="border-color:#4caf50; background: linear-gradient(135deg, #ffffff 0%, #f1f8f4 100%);">
+                        <div class="delivery-header">
+                            <span class="delivery-id">${escapeHtml(order.id.toString())}</span>
+                            <span class="delivery-fee">$${(order.delivery_fee||5).toFixed(2)} 💰</span>
+                        </div>
+                        <div class="delivery-info">
+                            <div class="delivery-location">
+                                <span class="location-icon">🏪</span>
+                                <div><strong>From:</strong> ${escapeHtml(order.restaurant_name)}</div>
+                            </div>
+                            <div class="delivery-location">
+                                <span class="location-icon">📍</span>
+                                <div><strong>To:</strong> ${escapeHtml(order.delivery_address || 'Customer Address')}<br>
+                                    <strong>Customer:</strong> ${escapeHtml(order.customer_name)}
+                                </div>
+                            </div>
+                        </div>
+                        <button class="btn btn-success" onclick="completeDelivery('${order.id}')">✓ Mark as Delivered</button>
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error('Failed to load active delivery', err);
+            }
+        }
+
+        async function completeDelivery(orderId) {
+            if (!confirm('Confirm delivery completion?')) return;
+            await fetch(`${API_BASE}/api/orders/${orderId}`, {
+                method: 'PATCH',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ status: 'delivered' })
+            });
+            toast('✅ Delivery marked as completed!');
+            renderActiveDelivery();
+            renderAvailableDeliveries();
+            loadStats();
+        }
+
+        async function renderDeliveryHistory() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/orders`, { headers: getAuthHeaders() });
+                const orders = await resp.json();
+                const history = orders.filter(o => o.rider_id === currentUser.id && o.status === 'delivered')
+                                       .sort((a,b) => new Date(b.updated_at) - new Date(a.updated_at));
+                const container = document.getElementById('deliveryHistory');
+                if (!history.length) {
+                    container.innerHTML = `<div class="empty-state"><p>No completed deliveries yet.</p></div>`;
+                    return;
+                }
+                container.innerHTML = history.map(order => `
+                    <div class="delivery-card">
+                        <div class="delivery-header">
+                            <span class="delivery-id">${escapeHtml(order.id.toString())}</span>
+                            <span class="delivery-fee">$${(order.delivery_fee||5).toFixed(2)} 💰</span>
+                        </div>
+                        <div class="delivery-info">
+                            <div><strong>From:</strong> ${escapeHtml(order.restaurant_name)}</div>
+                            <div><strong>To:</strong> ${escapeHtml(order.delivery_address)}</div>
+                            <div><strong>Order Total:</strong> $${order.total_price.toFixed(2)}</div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error('Failed to load delivery history', err);
+            }
+        }
+
+        function setAvailability(available) {
+            isAvailable = available;
+            document.getElementById('availableBtn').classList.toggle('active', isAvailable);
+            document.getElementById('offlineBtn').classList.toggle('active', !isAvailable);
+            toast(available ? '✅ You are now available for deliveries' : '⚠️ You are now offline');
+            renderAvailableDeliveries();
+        }
+
+        function logout() {
+            sessionStorage.removeItem('authToken');
+            window.location.href = 'index.html';
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (!await ensureAuthenticated('rider')) return;
+            // Initially show available deliveries if online
+            renderAvailableDeliveries();
+            renderActiveDelivery();
+            renderDeliveryHistory();
+            loadStats();
+        });
+    </script>
+</body>
+</html>

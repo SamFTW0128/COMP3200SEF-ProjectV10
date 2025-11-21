@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FoodTrack - Customer Portal</title>
+    <style>
+        /* (CSS omitted for brevity; existing styling is kept) */
+        /* ... */
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="header-content">
+            <div class="logo">
+                <div class="logo-icon">🍽️</div>
+                <span>FoodTrack Customer</span>
+            </div>
+            <button class="cart-btn" onclick="toggleCart()">
+                🛒 Cart <span id="cartBadge" class="cart-badge">0</span>
+            </button>
+            <button class="btn-logout" onclick="logout()">Logout</button>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="hero">
+            <h1>Welcome to FoodTrack 🍔🍕</h1>
+            <p>Browse restaurants and order your favorite meals!</p>
+            <div class="search-bar">
+                <input type="text" id="searchInput" placeholder="Search restaurants...">
+            </div>
+        </div>
+        <div class="restaurant-grid" id="restaurantGrid"></div>
+
+        <!-- Order History -->
+        <h2 class="section-title">Order History</h2>
+        <div id="orderHistory"></div>
+    </div>
+
+    <!-- Menu Modal -->
+    <div class="modal" id="menuModal">
+        <div class="modal-content">
+            <button onclick="closeMenu()">Close</button>
+            <h2 id="modalRestaurantName"></h2>
+            <div class="menu-grid" id="menuGrid"></div>
+        </div>
+    </div>
+
+    <!-- Cart Sidebar -->
+    <div id="cartSidebar">
+        <h3>Your Cart</h3>
+        <div class="cart-items" id="cartItems"></div>
+        <div class="cart-footer">
+            <div class="cart-total">
+                <span>Total:</span>
+                <span id="cartTotal">$0.00</span>
+            </div>
+            <button class="btn-checkout" onclick="checkout()">Checkout</button>
+        </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+
+    <script src="utils.js"></script>
+    <script>
+        const API_BASE = '';
+        let currentUser = null;
+        let currentRestaurant = null;
+        let cart = { items: [], restaurantId: null };
+
+        function getAuthHeaders() {
+            return {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + sessionStorage.getItem('authToken')
+            };
+        }
+
+        async function ensureAuthenticated(requiredRole) {
+            const token = sessionStorage.getItem('authToken');
+            if (!token) { window.location.href = 'index.html'; return false; }
+            try {
+                const resp = await fetch(`${API_BASE}/api/me`, {
+                    headers: { 'Authorization': 'Bearer ' + token }
+                });
+                if (!resp.ok) { sessionStorage.removeItem('authToken'); window.location.href = 'index.html'; return false; }
+                const data = await resp.json();
+                currentUser = { id: data.user.id, name: data.user.name, role: data.user.role };
+                if (requiredRole && currentUser.role !== requiredRole) {
+                    window.location.href = 'index.html'; return false;
+                }
+                return true;
+            } catch (err) {
+                console.error(err);
+                sessionStorage.removeItem('authToken');
+                window.location.href = 'index.html';
+                return false;
+            }
+        }
+
+        // Fetch and display restaurants
+        async function renderRestaurants() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/users?role=restaurant`, { headers: getAuthHeaders() });
+                const restaurants = await resp.json();
+                const grid = document.getElementById('restaurantGrid');
+                if (!restaurants.length) {
+                    grid.innerHTML = `<p style="text-align:center; padding:2rem; color:var(--color-text-secondary);">No restaurants available 🏪</p>`;
+                    return;
+                }
+                grid.innerHTML = restaurants.map(r => `
+                    <div class="restaurant-card" onclick="openMenu(${r.id})">
+                        <img src="${r.imageUrl || 'https://images.unsplash.com/photo-1517248135467-4c7edcad34c4?w=400&h=300&fit=crop'}" 
+                             alt="${escapeHtml(r.name)}" class="restaurant-image">
+                        <div class="restaurant-info">
+                            <div class="restaurant-name">${escapeHtml(r.name)}</div>
+                            <div class="restaurant-meta">
+                                <span class="rating">⭐ ${r.rating || 4.5}</span>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error('Failed to load restaurants', err);
+            }
+        }
+
+        // Open menu modal for a restaurant
+        async function openMenu(restaurantId) {
+            currentRestaurant = restaurantId;
+            try {
+                const resp = await fetch(`${API_BASE}/api/dishes?restaurant_id=${restaurantId}`, {
+                    headers: getAuthHeaders()
+                });
+                const menuItems = await resp.json();
+                document.getElementById('modalRestaurantName').textContent = `Menu - ${escapeHtml(currentRestaurantName(menuItems) || '')}`;
+                const menuGrid = document.getElementById('menuGrid');
+                if (!menuItems.length) {
+                    menuGrid.innerHTML = `<p style="text-align:center; padding:2rem; color:var(--color-text-secondary);">No menu items available.</p>`;
+                } else {
+                    menuGrid.innerHTML = menuItems.map(dish => `
+                        <div class="menu-item">
+                            <img src="${dish.image_url || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=300&h=200'}" 
+                                 alt="${escapeHtml(dish.name)}" class="menu-item-image">
+                            <div class="menu-item-info">
+                                <div class="menu-item-name">${escapeHtml(dish.name)}</div>
+                                <div class="menu-item-desc">${escapeHtml(dish.description || '')}</div>
+                                <div class="menu-item-footer">
+                                    <span class="menu-item-price">$${dish.price.toFixed(2)}</span>
+                                    <button class="btn-add-cart" onclick="addToCart('${dish.id}', event)">Add +</button>
+                                </div>
+                            </div>
+                        </div>
+                    `).join('');
+                }
+                document.getElementById('menuModal').classList.add('active');
+            } catch (err) {
+                console.error('Failed to load menu', err);
+            }
+        }
+
+        function closeMenu() {
+            document.getElementById('menuModal').classList.remove('active');
+        }
+
+        // Add dish to cart (stored in-memory)
+        function addToCart(dishId, event) {
+            event.stopPropagation();
+            // Ensure cart is for this restaurant
+            if (cart.restaurantId && cart.restaurantId != currentRestaurant) {
+                if (!confirm('Cart contains items from another restaurant. Continue and clear cart?')) return;
+                cart = { restaurantId: null, items: [] };
+            }
+            cart.restaurantId = currentRestaurant;
+            // (For simplicity we re-fetch dish details)
+            fetch(`${API_BASE}/api/dishes?restaurant_id=${currentRestaurant}`, { headers: getAuthHeaders() })
+                .then(resp => resp.json())
+                .then(menu => {
+                    const dish = menu.find(d => d.id == dishId);
+                    if (!dish) return;
+                    let item = cart.items.find(i => i.dishId == dishId);
+                    if (item) {
+                        item.quantity++;
+                    } else {
+                        cart.items.push({
+                            dishId: dish.id,
+                            dishName: dish.name,
+                            price: dish.price,
+                            quantity: 1
+                        });
+                    }
+                    updateCartDisplay();
+                    toast('✅ Added to cart!');
+                });
+        }
+
+        function updateCartDisplay() {
+            const badge = document.getElementById('cartBadge');
+            const totalQty = cart.items.reduce((sum,i) => sum + i.quantity, 0);
+            badge.textContent = totalQty;
+            badge.style.display = totalQty > 0 ? 'flex' : 'none';
+
+            const cartItemsEl = document.getElementById('cartItems');
+            if (!cart.items.length) {
+                cartItemsEl.innerHTML = `<p style="text-align:center; padding:2rem; color:var(--color-text-secondary);">Your cart is empty 🛒</p>`;
+            } else {
+                cartItemsEl.innerHTML = cart.items.map(item => `
+                    <div class="cart-item">
+                        <div>
+                            <div style="font-weight:600;">${escapeHtml(item.dishName)}</div>
+                            <div style="font-size:0.875rem; color:var(--color-text-secondary);">
+                                Qty: ${item.quantity} × $${item.price.toFixed(2)}
+                            </div>
+                        </div>
+                        <button onclick="removeFromCart('${item.dishId}')"
+                                style="background:none;border:none;color:var(--color-danger);cursor:pointer;font-size:1.25rem;">×</button>
+                    </div>
+                `).join('');
+            }
+            const total = cart.items.reduce((sum,i) => sum + i.price*i.quantity, 0);
+            document.getElementById('cartTotal').textContent = `$${total.toFixed(2)}`;
+        }
+
+        function removeFromCart(dishId) {
+            cart.items = cart.items.filter(i => i.dishId != dishId);
+            if (!cart.items.length) cart.restaurantId = null;
+            updateCartDisplay();
+        }
+
+        function toggleCart() {
+            document.getElementById('cartSidebar').classList.toggle('active');
+        }
+
+        async function checkout() {
+            if (!cart.items.length) {
+                toast('⚠️ Cart is empty');
+                return;
+            }
+            try {
+                const orderData = {
+                    restaurant_id: cart.restaurantId,
+                    total_price: cart.items.reduce((sum,i) => sum + i.price*i.quantity, 0)
+                };
+                const resp = await fetch(`${API_BASE}/api/orders`, {
+                    method: 'POST',
+                    headers: getAuthHeaders(),
+                    body: JSON.stringify(orderData)
+                });
+                const result = await resp.json();
+                toast('✅ Order placed successfully!');
+                cart = { items: [], restaurantId: null };
+                updateCartDisplay();
+                toggleCart();
+                renderOrderHistory();
+            } catch (err) {
+                console.error('Checkout failed', err);
+            }
+        }
+
+        async function renderOrderHistory() {
+            try {
+                const resp = await fetch(`${API_BASE}/api/orders`, { headers: getAuthHeaders() });
+                const orders = await resp.json();
+                const myOrders = orders.filter(o => o.customer_id === currentUser.id)
+                                       .sort((a,b) => new Date(b.created_at) - new Date(a.created_at));
+                const historyEl = document.getElementById('orderHistory');
+                if (!myOrders.length) {
+                    historyEl.innerHTML = `<p style="text-align:center; padding:2rem; color:var(--color-text-secondary);">No orders yet. Start ordering! 🍔</p>`;
+                    return;
+                }
+                historyEl.innerHTML = myOrders.map(order => `
+                    <div class="order-card">
+                        <div class="order-header">
+                            <span class="order-id">${escapeHtml(order.id.toString())}</span>
+                            <span class="status-badge status-${order.status.toLowerCase()}">${escapeHtml(order.status)}</span>
+                        </div>
+                        <div><strong>${escapeHtml(order.restaurant_name)}</strong></div>
+                        <div style="font-size:0.875rem; color:var(--color-text-secondary); margin-bottom:0.75rem;">
+                            ${order.items.length} items • $${order.total_price.toFixed(2)} • ${new Date(order.created_at).toLocaleString()}
+                        </div>
+                        ${['pending','cancelled'].includes(order.status) ? 
+                            `<button class="btn-add-cart" onclick="cancelOrder('${order.id}')">Cancel Order ❌</button>` 
+                            : ''}
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error('Failed to load order history', err);
+            }
+        }
+
+        async function cancelOrder(orderId) {
+            if (!confirm('Are you sure you want to cancel this order?')) return;
+            await fetch(`${API_BASE}/api/orders/${orderId}`, {
+                method: 'PATCH',
+                headers: getAuthHeaders(),
+                body: JSON.stringify({ status: 'cancelled' })
+            });
+            toast('✅ Order cancelled');
+            renderOrderHistory();
+        }
+
+        function logout() {
+            sessionStorage.removeItem('authToken');
+            window.location.href = 'index.html';
+        }
+
+        function currentRestaurantName(menuItems) {
+            // Helper: assume each dish object has restaurant_name field
+            return menuItems[0] ? menuItems[0].restaurant_name : null;
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            if (!await ensureAuthenticated('customer')) return;
+            renderRestaurants();
+            renderOrderHistory();
+            updateCartDisplay();
+            // Search functionality (optional)
+            document.getElementById('searchInput').addEventListener('input', (e) => {
+                const q = e.target.value.toLowerCase();
+                document.querySelectorAll('.restaurant-card').forEach(card => {
+                    const name = card.querySelector('.restaurant-name').textContent.toLowerCase();
+                    card.style.display = name.includes(q) ? '' : 'none';
+                });
+            });
+        });
+    </script>
+</body>
+</html>
